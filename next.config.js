@@ -11,28 +11,27 @@ const nextConfig = {
   },
   // Переменные окружения для клиентской стороны (с префиксом NEXT_PUBLIC_)
   env: {
-    NEXT_PUBLIC_VITE_API_URL: process.env.NEXT_PUBLIC_VITE_API_URL || process.env.VITE_API_URL || 'http://localhost:8000/api',
-    NEXT_PUBLIC_VITE_PUBLIC_URL: process.env.NEXT_PUBLIC_VITE_PUBLIC_URL || process.env.VITE_PUBLIC_URL || 'http://localhost:3000',
+    NEXT_PUBLIC_VITE_API_URL: process.env.NEXT_PUBLIC_VITE_API_URL || process.env.VITE_API_URL || '/api',
+    NEXT_PUBLIC_VITE_PUBLIC_URL: process.env.NEXT_PUBLIC_VITE_PUBLIC_URL || process.env.VITE_PUBLIC_URL || process.env.RAILWAY_PUBLIC_DOMAIN || 'http://localhost:3000',
     NEXT_PUBLIC_VITE_ADMIN_IDS: process.env.NEXT_PUBLIC_VITE_ADMIN_IDS || process.env.VITE_ADMIN_IDS || '',
   },
   // Настройка для API прокси
   async rewrites() {
-    // В production проксируем API запросы на бэкенд
+    // В production на Railway/других платформах API на том же домене
     const apiUrl = process.env.NEXT_PUBLIC_VITE_API_URL || process.env.VITE_API_URL;
     
-    // Если это относительный путь или не указан, используем внутренний прокси
+    // Если это относительный путь или не указан, используем тот же домен
     if (!apiUrl || apiUrl.startsWith('/')) {
-      // В Docker/Production бэкенд на том же хосте, но другом порту
-      const backendUrl = process.env.BACKEND_URL || 'http://localhost:8000';
+      // В production (Railway/Docker) API на том же домене
       return [
         {
           source: '/api/:path*',
-          destination: `${backendUrl}/api/:path*`,
+          destination: '/api/:path*', // Проксируем на тот же сервер
         },
       ];
     }
     
-    // Внешний API URL
+    // Внешний API URL (для dev режима)
     let destination = apiUrl.trim();
     if (!destination.startsWith('http://') && !destination.startsWith('https://')) {
       destination = `https://${destination}`;

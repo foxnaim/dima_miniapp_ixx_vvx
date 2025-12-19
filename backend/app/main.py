@@ -146,12 +146,33 @@ if static_dir.exists():
         logger.info(f"✅ Mounting Next.js static files from: {static_dir}")
     app.mount("/_next/static", StaticFiles(directory=str(static_dir)), name="next-static")
 
+# Монтируем Next.js standalone server файлы для SSR
+standalone_dir = next_dir / "standalone"
+if standalone_dir.exists():
+    server_dir = standalone_dir / "server"
+    if server_dir.exists():
+        if settings.environment != "production":
+            logger.info(f"✅ Found Next.js standalone server at: {server_dir}")
+        # Монтируем server chunks если есть
+        chunks_dir = server_dir / "chunks"
+        if chunks_dir.exists():
+            app.mount("/_next/chunks", StaticFiles(directory=str(chunks_dir)), name="next-chunks")
+
 # Монтируем public файлы
-public_dir = here.parent.parent.parent / "public" if here.parent.parent.parent.exists() else Path.cwd() / "public"
+here = Path(__file__).resolve()
+public_dir = here.parent.parent.parent / "public" if (here.parent.parent.parent / "public").exists() else Path.cwd() / "public"
 if public_dir.exists():
     if settings.environment != "production":
         logger.info(f"✅ Mounting public files from: {public_dir}")
-    app.mount("/favicon.svg", StaticFiles(directory=str(public_dir)), name="public")
+    # Монтируем favicon
+    @app.get("/favicon.svg")
+    async def favicon():
+        from fastapi.responses import FileResponse
+        from fastapi import HTTPException
+        favicon_path = public_dir / "favicon.svg"
+        if favicon_path.exists():
+            return FileResponse(str(favicon_path))
+        raise HTTPException(status_code=404)
 
 
 @app.middleware("http")
@@ -357,8 +378,7 @@ async def health():
   """Health check endpoint that doesn't require database."""
   return {"status": "ok", "message": "Server is running"}
 
-# Next.js будет обрабатывать все не-API маршруты через rewrites в next.config.js
-# В production Next.js работает как отдельный сервис или через прокси
-if settings.environment != "production":
-    logger.info("✅ Frontend routing handled by Next.js rewrites")
+# SPA fallback - отдаем Next.js для всех не-API маршрутов
+# В production на Railway Next.js работает через FastAPI прокси
+# Next.js standalone server обрабатывает маршруты через rewrites
 
