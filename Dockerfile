@@ -33,10 +33,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./backend/
 
 # Копируем собранный фронтенд из предыдущего stage
-COPY --from=frontend-builder /app/.next ./.next
+# Next.js standalone уже содержит все необходимое
+COPY --from=frontend-builder /app/.next/standalone ./
+COPY --from=frontend-builder /app/.next/static ./.next/static
 COPY --from=frontend-builder /app/public ./public
-COPY --from=frontend-builder /app/package.json ./package.json
-COPY --from=frontend-builder /app/node_modules ./node_modules
 
 # Создаем директорию для uploads
 RUN mkdir -p uploads
@@ -55,7 +55,8 @@ RUN apt-get update && apt-get install -y curl && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Запускаем FastAPI на порту из переменной PORT (Railway устанавливает автоматически)
-# FastAPI отдает Next.js статику и обрабатывает API
-CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Запускаем Next.js standalone server и FastAPI параллельно
+# Next.js на порту из PORT (Railway проксирует на него), FastAPI на порту 8000 (внутренний)
+# Next.js обрабатывает фронтенд и проксирует /api на FastAPI через rewrites
+CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 & PORT=${PORT:-3000} node server.js"]
 

@@ -20,13 +20,14 @@ const nextConfig = {
     // В production на Railway/других платформах API на том же домене
     const apiUrl = process.env.NEXT_PUBLIC_VITE_API_URL || process.env.VITE_API_URL;
     
-    // Если это относительный путь или не указан, используем тот же домен
+    // Если это относительный путь или не указан, используем внутренний прокси
     if (!apiUrl || apiUrl.startsWith('/')) {
-      // В production (Railway/Docker) API на том же домене
+      // В production (Railway/Docker) FastAPI на порту 8000 (внутренний)
+      // Next.js проксирует /api запросы на FastAPI
       return [
         {
           source: '/api/:path*',
-          destination: '/api/:path*', // Проксируем на тот же сервер
+          destination: 'http://localhost:8000/api/:path*',
         },
       ];
     }
