@@ -58,5 +58,6 @@ RUN apt-get update && apt-get install -y curl && \
 # Запускаем Next.js standalone server и FastAPI параллельно
 # Next.js на порту из $PORT (Railway устанавливает автоматически), FastAPI на порту 8000 (внутренний)
 # Next.js обрабатывает фронтенд и проксирует /api на FastAPI через rewrites
-CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 & PORT=$PORT node server.js"]
+# Используем wait чтобы оба процесса оставались запущенными
+CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 & PORT=$PORT node server.js & wait"]
 
