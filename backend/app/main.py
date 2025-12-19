@@ -258,8 +258,8 @@ async def startup():
     logging.getLogger("motor").setLevel(logging.ERROR)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # Убираем access logs
   else:
-  pymongo_logger = logging.getLogger("pymongo")
-  pymongo_logger.setLevel(logging.WARNING)  # Только предупреждения и ошибки
+    pymongo_logger = logging.getLogger("pymongo")
+    pymongo_logger.setLevel(logging.WARNING)  # Только предупреждения и ошибки
   
   # Подключаемся к MongoDB при старте для быстрого первого запроса
   await connect_to_mongo()
@@ -273,7 +273,7 @@ async def startup():
     # В production очищаем реже для экономии ресурсов
     asyncio.create_task(cleanup_deleted_orders())
   else:
-  asyncio.create_task(cleanup_deleted_orders())
+    asyncio.create_task(cleanup_deleted_orders())
   
   # Настраиваем webhook для Telegram Bot API (если указан публичный URL)
   import os
