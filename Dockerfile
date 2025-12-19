@@ -43,11 +43,11 @@ RUN mkdir -p uploads
 
 # Переменные окружения по умолчанию
 ENV PYTHONUNBUFFERED=1
-ENV PORT=8000
 ENV NEXT_PUBLIC_VITE_API_URL=/api
 
-# Открываем порт (Railway автоматически устанавливает PORT)
-EXPOSE 8000
+# Railway автоматически устанавливает PORT через переменную окружения
+# Next.js будет слушать на $PORT, FastAPI на 8000 (внутренний)
+# EXPOSE не нужен - Railway использует свой PORT
 
 # Устанавливаем Node.js для запуска Next.js standalone server
 RUN apt-get update && apt-get install -y curl && \
@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Запускаем Next.js standalone server и FastAPI параллельно
-# Next.js на порту из PORT (Railway проксирует на него), FastAPI на порту 8000 (внутренний)
+# Next.js на порту из $PORT (Railway устанавливает автоматически), FastAPI на порту 8000 (внутренний)
 # Next.js обрабатывает фронтенд и проксирует /api на FastAPI через rewrites
-CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 & PORT=${PORT:-3000} node server.js"]
+CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 & PORT=$PORT node server.js"]
 
