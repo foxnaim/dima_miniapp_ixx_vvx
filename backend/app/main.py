@@ -238,13 +238,13 @@ async def cleanup_deleted_orders():
     except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError) as e:
       # Временные проблемы с подключением - логируем только в dev
       if settings.environment != "production":
-      logger.warning(f"Временная проблема с подключением к MongoDB в фоновой задаче очистки заказов: {e}")
+        logger.warning(f"Временная проблема с подключением к MongoDB в фоновой задаче очистки заказов: {e}")
       sleep_time = 300 if settings.environment == "production" else 60
       await asyncio.sleep(sleep_time)
     except Exception as e:
       # Логируем только критические ошибки в production
       if settings.environment != "production":
-      logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}")
+        logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}")
       sleep_time = 300 if settings.environment == "production" else 60
       await asyncio.sleep(sleep_time)
 
