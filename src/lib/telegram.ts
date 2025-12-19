@@ -1,0 +1,523 @@
+// Telegram WebApp utilities
+import { toast } from '@/lib/toast';
+
+const INIT_DATA_PARAM = 'tgWebAppData';
+let cachedInitData: string | null = null;
+let waitForInitDataPromise: Promise<string | null> | null = null;
+let activeMainButtonHandler: (() => void) | null = null;
+let swipePreventionCleanup: (() => void) | null = null;
+
+const hasTelegramInitContext = (tg?: TelegramWebApp | null): tg is TelegramWebApp => {
+  if (!tg) {
+    return false;
+  }
+
+  const hasUnsafeUser = Boolean(tg.initDataUnsafe?.user?.id);
+  const hasInitData =
+    typeof tg.initData === 'string' && tg.initData.trim().length > 0;
+
+  return hasUnsafeUser || hasInitData;
+};
+
+export const getTelegram = () => {
+  if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
+    return window.Telegram.WebApp;
+  }
+  return null;
+};
+
+export const isTelegramWebApp = () => hasTelegramInitContext(getTelegram());
+
+// Более щадящая проверка окружения: используем, когда нужно понять,
+// что приложение открыто в Telegram (включая Desktop), даже если initData пуст.
+type TelegramWithPlatform = TelegramWebApp & { platform?: string };
+
+export const isTelegramEnvironment = () => {
+  const tg = getTelegram();
+  if (!tg) return false;
+  if (hasTelegramInitContext(tg)) return true;
+  const platform = (tg as TelegramWithPlatform).platform;
+  return Boolean(platform && platform !== 'unknown');
+};
+
+const extractInitDataFromString = (raw?: string | null) => {
+  if (!raw) return null;
+  const match = raw.match(new RegExp(`${INIT_DATA_PARAM}=([^&]+)`));
+  if (!match || match.length < 2) {
+    return null;
+  }
+  const encoded = match[1];
+  try {
+    return decodeURIComponent(encoded);
+  } catch (error) {
+    return encoded;
+  }
+};
+
+const getInitDataFromLocation = (): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const fromHash = extractInitDataFromString(window.location.hash);
+  if (fromHash) {
+    return fromHash;
+  }
+  return extractInitDataFromString(window.location.search);
+};
+
+const serializeInitDataUnsafe = (
+  initData?: TelegramWebAppInitData
+): string | null => {
+  if (!initData?.hash || !initData.auth_date) {
+    return null;
+  }
+
+  const params = new URLSearchParams();
+  Object.entries(initData as unknown as Record<string, unknown>).forEach(([key, value]) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    if (typeof value === 'object') {
+      params.set(key, JSON.stringify(value));
+      return;
+    }
+    params.set(key, String(value));
+  });
+
+  return params.toString();
+};
+
+const persistInitData = (value: string) => {
+  cachedInitData = value;
+};
+
+export const refreshTelegramData = (): void => {
+  // Очищаем кэш, чтобы при следующем запросе данные обновились
+  cachedInitData = null;
+};
+
+const readStoredInitData = (): string | null => {
+  if (cachedInitData) {
+    return cachedInitData;
+  }
+  return null;
+};
+
+const resolveTelegramInitData = (): string | null => {
+  const tg = getTelegram();
+  const direct = tg?.initData?.trim();
+  if (direct) {
+    return direct;
+  }
+
+  const fromLocation = getInitDataFromLocation();
+  if (fromLocation) {
+    return fromLocation;
+  }
+
+  return serializeInitDataUnsafe(tg?.initDataUnsafe);
+};
+
+const getTelegramInitData = (): string | null => {
+  const resolved = resolveTelegramInitData();
+  if (resolved) {
+    persistInitData(resolved);
+    return resolved;
+  }
+  return readStoredInitData();
+};
+
+const delay = (ms: number) =>
+  new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
+
+const waitForTelegramInitDataInternal = async (
+  timeoutMs = 2000,
+  intervalMs = 50
+): Promise<string | null> => {
+  const deadline = Date.now() + timeoutMs;
+  let initData = getTelegramInitData();
+
+  while (!initData && Date.now() < deadline) {
+    await delay(intervalMs);
+    initData = getTelegramInitData();
+  }
+
+  return initData;
+};
+
+export const waitForTelegramInitData = async (
+  timeoutMs = 2000
+): Promise<string | null> => {
+  if (!waitForInitDataPromise) {
+    waitForInitDataPromise = waitForTelegramInitDataInternal(timeoutMs);
+  }
+
+  try {
+    const result = await waitForInitDataPromise;
+    if (!result) {
+      waitForInitDataPromise = null;
+    }
+    return result;
+  } finally {
+    waitForInitDataPromise = null;
+  }
+};
+
+const compareVersions = (current: string, min: string) => {
+  const currentParts = current.split('.').map(part => parseInt(part, 10) || 0);
+  const minParts = min.split('.').map(part => parseInt(part, 10) || 0);
+  const length = Math.max(currentParts.length, minParts.length);
+
+  for (let i = 0; i < length; i++) {
+    const cur = currentParts[i] ?? 0;
+    const minVal = minParts[i] ?? 0;
+    if (cur > minVal) return true;
+    if (cur < minVal) return false;
+  }
+  return true;
+};
+
+const isVersionSupported = (minVersion: string) => {
+  const tg = getTelegram();
+  if (!tg?.version) return false;
+  return compareVersions(tg.version, minVersion);
+};
+
+type ExtendedTelegramWebApp = TelegramWebApp & {
+  disableVerticalSwipes?: () => void;
+  enableVerticalSwipes?: () => void;
+};
+
+const preventPullDownToClose = (tg?: ExtendedTelegramWebApp | null) => {
+  if (tg && typeof tg.disableVerticalSwipes === 'function') {
+    tg.disableVerticalSwipes();
+    return () => {
+      if (typeof tg.enableVerticalSwipes === 'function') {
+        tg.enableVerticalSwipes();
+      }
+    };
+  }
+
+  let startY = 0;
+  const getScrollTop = () => document.scrollingElement?.scrollTop ?? window.scrollY;
+
+  const handleTouchStart = (event: TouchEvent) => {
+    startY = event.touches[0]?.clientY ?? 0;
+  };
+
+  const handleTouchMove = (event: TouchEvent) => {
+    const currentY = event.touches[0]?.clientY ?? 0;
+    const isPullingDown = currentY - startY > 8;
+    if (isPullingDown && getScrollTop() <= 0) {
+      event.preventDefault();
+    }
+  };
+
+  document.addEventListener('touchstart', handleTouchStart, { passive: true });
+  document.addEventListener('touchmove', handleTouchMove, { passive: false });
+
+  return () => {
+    document.removeEventListener('touchstart', handleTouchStart);
+    document.removeEventListener('touchmove', handleTouchMove);
+  };
+};
+
+export const initTelegram = () => {
+  const tg = getTelegram();
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    getTelegramInitData();
+    
+    // Apply Telegram theme
+    if (tg.themeParams) {
+      applyTelegramTheme(tg.themeParams);
+    }
+    
+    // Set color scheme
+    if (tg.colorScheme) {
+      document.documentElement.classList.toggle('dark', tg.colorScheme === 'dark');
+    }
+
+    // Устанавливаем отступ для статус-бара Telegram
+    const setHeaderOffset = () => {
+      // Высота статус-бара Telegram = разница между viewport и стабильной высотой
+      const viewportHeight = tg.viewportHeight || window.innerHeight;
+      const viewportStableHeight = tg.viewportStableHeight || viewportHeight;
+      const headerHeight = Math.max(0, viewportHeight - viewportStableHeight);
+
+      // Если Telegram не сообщает точную высоту, используем дефолт 44px (статус-бар iOS)
+      const finalStatusHeight = headerHeight > 0 ? headerHeight : 44;
+
+      document.documentElement.style.setProperty('--tg-header-height', `${finalStatusHeight}px`);
+      document.body.classList.add('telegram-app');
+    };
+
+    // Устанавливаем отступ сразу
+    setHeaderOffset();
+    
+    // Слушаем изменения viewport
+    if (typeof tg.onEvent === 'function') {
+      tg.onEvent('viewportChanged', setHeaderOffset);
+    }
+    
+    // Также обновляем при изменении размера окна (fallback)
+    window.addEventListener('resize', setHeaderOffset);
+
+    if (swipePreventionCleanup) {
+      swipePreventionCleanup();
+      swipePreventionCleanup = null;
+    }
+    swipePreventionCleanup = preventPullDownToClose(tg as ExtendedTelegramWebApp);
+  }
+  return tg;
+};
+
+type TelegramThemeParams = Partial<{
+  bg_color: string;
+  secondary_bg_color: string;
+  text_color: string;
+  hint_color: string;
+  link_color: string;
+  button_color: string;
+  button_text_color: string;
+}>;
+
+export const applyTelegramTheme = (themeParams: TelegramThemeParams) => {
+  const root = document.documentElement;
+  
+  if (themeParams.bg_color) {
+    root.style.setProperty('--telegram-bg', themeParams.bg_color);
+  }
+  if (themeParams.secondary_bg_color) {
+    root.style.setProperty('--telegram-secondary-bg', themeParams.secondary_bg_color);
+  }
+  if (themeParams.text_color) {
+    root.style.setProperty('--telegram-text', themeParams.text_color);
+  }
+  if (themeParams.hint_color) {
+    root.style.setProperty('--telegram-hint', themeParams.hint_color);
+  }
+  if (themeParams.link_color) {
+    root.style.setProperty('--telegram-link', themeParams.link_color);
+  }
+  if (themeParams.button_color) {
+    root.style.setProperty('--telegram-button', themeParams.button_color);
+  }
+  if (themeParams.button_text_color) {
+    root.style.setProperty('--telegram-button-text', themeParams.button_text_color);
+  }
+};
+
+export const getUserId = (): number | null => {
+  const tg = getTelegram();
+  // Используем ТОЛЬКО реальный ID от Telegram, без fallback
+  return tg?.initDataUnsafe?.user?.id || null;
+};
+
+export const getUser = () => {
+  const tg = getTelegram();
+  // Возвращаем ТОЛЬКО реальные данные от Telegram
+  return tg?.initDataUnsafe?.user || null;
+};
+
+export const isAdmin = (userId: number, adminIds: number[]): boolean => {
+  return adminIds.includes(userId);
+};
+
+const detachMainButtonHandler = (tg?: TelegramWebApp | null) => {
+  if (!activeMainButtonHandler) {
+    return;
+  }
+
+  const telegram = tg ?? getTelegram();
+  if (!telegram) {
+    activeMainButtonHandler = null;
+    return;
+  }
+
+  try {
+    telegram.MainButton.offClick(activeMainButtonHandler);
+  } catch {
+    // Ignore detach errors - Telegram SDK can throw when handler not found
+  } finally {
+    activeMainButtonHandler = null;
+  }
+};
+
+export const showMainButton = (
+  text: string,
+  onClick: () => void,
+  options?: { color?: string; textColor?: string }
+) => {
+  const tg = getTelegram();
+  if (!hasTelegramInitContext(tg)) return false;
+
+  // Удаляем предыдущий обработчик, если он был зарегистрирован
+  detachMainButtonHandler(tg);
+  activeMainButtonHandler = onClick;
+
+  tg.MainButton.setText(text);
+  if (options?.color) tg.MainButton.color = options.color;
+  if (options?.textColor) tg.MainButton.textColor = options.textColor;
+
+  tg.MainButton.onClick(onClick);
+  tg.MainButton.enable();
+  tg.MainButton.show();
+  return true;
+};
+
+export const hideMainButton = () => {
+  const tg = getTelegram();
+  if (!tg) return;
+
+  detachMainButtonHandler(tg);
+
+  try {
+    tg.MainButton.hideProgress();
+    tg.MainButton.disable();
+    tg.MainButton.hide();
+    tg.MainButton.setText('');
+    tg.MainButton.setParams({ is_visible: false, is_active: false });
+  } catch {
+    // Игнорируем ошибки, если что-то пошло не так
+  }
+};
+
+// Храним последний обработчик для правильного удаления
+let activeBackButtonHandler: (() => void) | null = null;
+
+export const showBackButton = (onClick: () => void) => {
+  const tg = getTelegram();
+  if (!hasTelegramInitContext(tg) || !isVersionSupported('6.1') || !tg.BackButton) return;
+
+  // Удаляем предыдущий обработчик, если он был
+  if (activeBackButtonHandler) {
+    try {
+      tg.BackButton.offClick(activeBackButtonHandler);
+    } catch {
+      // Игнорируем ошибки, если обработчик уже удален
+    }
+  }
+
+  activeBackButtonHandler = onClick;
+  tg.BackButton.onClick(onClick);
+  tg.BackButton.show();
+};
+
+export const hideBackButton = () => {
+  const tg = getTelegram();
+  if (!hasTelegramInitContext(tg) || !isVersionSupported('6.1') || !tg.BackButton) return;
+  
+  // Удаляем обработчик, если он был сохранен
+  if (activeBackButtonHandler) {
+    try {
+      tg.BackButton.offClick(activeBackButtonHandler);
+    } catch {
+      // Игнорируем ошибки, если обработчик уже удален
+    }
+    activeBackButtonHandler = null;
+  }
+  
+  tg.BackButton.hide();
+};
+
+// Deprecated: используйте toast из '@/lib/toast' вместо showAlert
+export const showAlert = (message: string) => {
+  toast.show(message);
+};
+
+export const showPopup = (
+  params: {
+  title?: string;
+  message: string;
+  buttons?: Array<{ id?: string; type?: string; text?: string }>;
+  },
+  callback?: (id: string) => void
+) => {
+  const tg = getTelegram();
+  const canUsePopup =
+    !!tg && isVersionSupported('6.1') && typeof tg.showPopup === 'function';
+
+  if (canUsePopup && tg) {
+    try {
+    tg.showPopup(params, callback);
+      return;
+    } catch (error) {
+      // Fallback to window.confirm
+    }
+  }
+
+  const ok = window.confirm(params.message);
+  const okButton =
+    params.buttons?.find(button => button.type !== 'cancel')?.id || 'confirm';
+  const cancelButton =
+    params.buttons?.find(button => button.type === 'cancel')?.id || 'cancel';
+  callback?.(ok ? okButton : cancelButton);
+};
+
+export const showConfirm = (message: string, callback?: (ok: boolean) => void) => {
+  const tg = getTelegram();
+  const canUseConfirm =
+    !!tg && typeof tg.showConfirm === 'function' && isVersionSupported('6.1');
+
+  if (canUseConfirm) {
+    try {
+      tg.showConfirm(message, callback);
+      return;
+    } catch (error) {
+      // Fallback to window.confirm
+    }
+  }
+
+  const result = window.confirm(message);
+  callback?.(result);
+};
+
+export const closeMiniApp = () => {
+  const tg = getTelegram();
+  if (tg) {
+    tg.close();
+  }
+};
+
+// Кэшируем заголовки для оптимизации
+let cachedAuthHeaders: Record<string, string> | null = null;
+let lastAuthCheck = 0;
+const AUTH_CACHE_TTL = 1000; // Кэш на 1 секунду
+
+export const getRequestAuthHeaders = (): Record<string, string> => {
+  const now = Date.now();
+  // Используем кэш если он свежий
+  if (cachedAuthHeaders !== null && now - lastAuthCheck < AUTH_CACHE_TTL) {
+    return cachedAuthHeaders;
+  }
+
+  // Используем ТОЛЬКО реальный ID от Telegram
+  const tg = getTelegram();
+  
+  // Пытаемся получить ID из initDataUnsafe (самый быстрый способ)
+  let realUserId = tg?.initDataUnsafe?.user?.id;
+  
+  // Если ID нет, пытаемся получить из initData
+  if (!realUserId && tg?.initData) {
+    try {
+      // Оптимизированный парсинг - ищем 'user=' напрямую
+      const userMatch = tg.initData.match(/user=([^&]+)/);
+      if (userMatch) {
+        const user = JSON.parse(decodeURIComponent(userMatch[1]));
+          realUserId = user?.id;
+        }
+    } catch {
+        // Игнорируем ошибки парсинга
+      }
+    }
+    
+  // Кэшируем результат
+  cachedAuthHeaders = realUserId ? { 'X-Dev-User-Id': realUserId.toString() } : {};
+  lastAuthCheck = now;
+  
+  return cachedAuthHeaders;
+};
